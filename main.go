@@ -17,19 +17,39 @@ import (
 	"github.com/gorilla/mux"
 
 	helper "github.com/pplavetzki/sample-encrypter/internal"
+	types "github.com/pplavetzki/sample-encrypter/internal/types"
+	"github.com/pplavetzki/sample-encrypter/mock"
 	jose "gopkg.in/square/go-jose.v2"
 )
 
-type result struct {
-	Index            int
-	EncryptedMessage string
-	EncryptError     error
-	SignError        error
-	SignedMessage    string
+type JoseEncrypter struct {
+	PrivateKey *rsa.PrivateKey
 }
 
-type IncomingMessage struct {
-	Content string `json:"content"`
+func (je *JoseEncrypter) EncryptResult(message []byte) *types.Result {
+
+	encrypter, err := getEncrypter(&je.PrivateKey.PublicKey)
+	if err != nil {
+		panic(err)
+	}
+	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.PS256, Key: je.PrivateKey}, nil)
+	if err != nil {
+		panic(err)
+	}
+	result := &types.Result{}
+	jkweb, err := encrypter.Encrypt(message)
+	if err != nil {
+		result.EncryptError = err
+	} else {
+		result.EncryptedMessage = jkweb.FullSerialize()
+		signed, err := signer.Sign([]byte(result.EncryptedMessage))
+		if err != nil {
+			result.SignError = err
+		} else {
+			result.SignedMessage = signed.FullSerialize()
+		}
+	}
+	return result
 }
 
 func genPrivateKey() (*rsa.PrivateKey, error) {
@@ -46,46 +66,25 @@ func getEncrypter(pubkey *rsa.PublicKey) (jose.Encrypter, error) {
 	return jose.NewEncrypter(jose.A128GCM, jose.Recipient{Algorithm: jose.RSA_OAEP, Key: pubkey}, &jose.EncrypterOptions{})
 }
 
-func EncryptIt(messages []IncomingMessage, privKey *rsa.PrivateKey, limit int) []result {
+func EncryptIt(messages []types.IncomingMessage, encrypter types.Encrypter, limit int) []types.Result {
 
 	// this buffered channel will block at the concurrency limit
 	semaphoreChan := make(chan struct{}, limit)
 
 	// this channel will not block and collect the http request results
-	resultsChan := make(chan *result)
+	resultsChan := make(chan *types.Result)
 
-	results := make([]result, len(messages))
+	results := make([]types.Result, len(messages))
 
 	defer func() {
 		close(semaphoreChan)
 		close(resultsChan)
 	}()
 
-	encrypter, err := getEncrypter(&privKey.PublicKey)
-	if err != nil {
-		panic(err)
-	}
-	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.PS256, Key: privKey}, nil)
-	if err != nil {
-		panic(err)
-	}
-
 	for i, message := range messages {
-		go func(i int, message IncomingMessage) {
+		go func(i int, message types.IncomingMessage) {
 			semaphoreChan <- struct{}{}
-			result := &result{}
-			jkweb, err := encrypter.Encrypt([]byte(message.Content))
-			if err != nil {
-				result.EncryptError = err
-			} else {
-				result.EncryptedMessage = jkweb.FullSerialize()
-				signed, err := signer.Sign([]byte(result.EncryptedMessage))
-				if err != nil {
-					result.SignError = err
-				} else {
-					result.SignedMessage = signed.FullSerialize()
-				}
-			}
+			result := encrypter.EncryptResult([]byte(message.Content))
 			resultsChan <- result
 			<-semaphoreChan
 		}(i, message)
@@ -108,9 +107,9 @@ func EncryptIt(messages []IncomingMessage, privKey *rsa.PrivateKey, limit int) [
 	return results
 }
 
-func encryptHandlerFunc(privKey *rsa.PrivateKey) http.HandlerFunc {
+func encryptHandlerFunc(encrypter types.Encrypter) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var im []IncomingMessage
+		var im []types.IncomingMessage
 
 		err := helper.DecodeJSONBody(w, r, &im)
 		if err != nil {
@@ -124,12 +123,13 @@ func encryptHandlerFunc(privKey *rsa.PrivateKey) http.HandlerFunc {
 			return
 		}
 
-		results := EncryptIt(im, privKey, 75)
+		results := EncryptIt(im, encrypter, 75)
 		for _, r := range results {
 			if r.EncryptError != nil {
 				log.Printf("encrypted value: %s\n", r.EncryptError)
 			}
 		}
+		log.Printf("Results returned with %d messages encrypted and signed.", len(results))
 		results = nil
 
 		w.WriteHeader(201)
@@ -142,7 +142,10 @@ func init() {
 
 func main() {
 	var wait time.Duration
+	var mockit bool
+
 	flag.DurationVar(&wait, "graceful-timeout", time.Second*90, "the duration for which the server gracefully wait for existing connections to finish - e.g. 15s or 1m")
+	flag.BoolVar(&mockit, "mock", false, "whether or not to block transaction or not - default false")
 	flag.Parse()
 
 	r := mux.NewRouter()
@@ -160,7 +163,16 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	r.HandleFunc("/encrypt", encryptHandlerFunc(privKey)).Methods("POST")
+	var encrypter types.Encrypter
+
+	if mockit {
+		log.Println("mocked")
+		encrypter = &mock.MockEncrypter{}
+	} else {
+		encrypter = &JoseEncrypter{PrivateKey: privKey}
+	}
+
+	r.HandleFunc("/encrypt", encryptHandlerFunc(encrypter)).Methods("POST")
 
 	// Run our server in a goroutine so that it doesn't block.
 	go func() {

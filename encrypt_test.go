@@ -1,13 +1,15 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	types "github.com/pplavetzki/sample-encrypter/internal/types"
+
+	"github.com/pplavetzki/sample-encrypter/mock"
+)
 
 func TestEncrypt(t *testing.T) {
-	// pk, err := genPrivateKey()
-	// if err != nil {
-	// 	t.Fatal(err)
-	// }
-	// if _, err := Encrypt([]byte("hello world"), &pk.PublicKey); err != nil {
-	// 	t.Fatal(err)
-	// }
+	messages := []types.IncomingMessage{{Content: string(make([]byte, 200000))}}
+	results := EncryptIt(messages, &mock.MockEncrypter{}, 75)
+	_ = results
 }

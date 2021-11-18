@@ -20,18 +20,8 @@ func (mr *MalformedRequest) Error() string {
 	return mr.Msg
 }
 
-func DecodeJSONBody(w http.ResponseWriter, r *http.Request, dst interface{}) error {
-	if r.Header.Get("Content-Type") != "" {
-		value, _ := header.ParseValueAndParams(r.Header, "Content-Type")
-		if value != "application/json" {
-			msg := "Content-Type header is not application/json"
-			return &MalformedRequest{Status: http.StatusUnsupportedMediaType, Msg: msg}
-		}
-	}
-
-	r.Body = http.MaxBytesReader(w, r.Body, 1048576)
-
-	dec := json.NewDecoder(r.Body)
+func DecodeJson(data io.ReadCloser, dst interface{}) error {
+	dec := json.NewDecoder(data)
 	dec.DisallowUnknownFields()
 
 	err := dec.Decode(&dst)
@@ -77,4 +67,19 @@ func DecodeJSONBody(w http.ResponseWriter, r *http.Request, dst interface{}) err
 	}
 
 	return nil
+}
+
+func DecodeJSONBody(w http.ResponseWriter, r *http.Request, dst interface{}) error {
+	if r.Header.Get("Content-Type") != "" {
+		value, _ := header.ParseValueAndParams(r.Header, "Content-Type")
+		if value != "application/json" {
+			msg := "Content-Type header is not application/json"
+			return &MalformedRequest{Status: http.StatusUnsupportedMediaType, Msg: msg}
+		}
+	}
+
+	defer r.Body.Close()
+	r.Body = http.MaxBytesReader(w, r.Body, 1048576)
+
+	return DecodeJson(r.Body, dst)
 }
