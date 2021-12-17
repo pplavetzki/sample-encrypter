@@ -6,9 +6,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/golang/gddo/httputil/header"
+	"github.com/pplavetzki/sample-encrypter/internal/types"
+	"github.com/spf13/viper"
+	"go.uber.org/zap"
 )
 
 type MalformedRequest struct {
@@ -82,4 +86,61 @@ func DecodeJSONBody(w http.ResponseWriter, r *http.Request, dst interface{}) err
 	r.Body = http.MaxBytesReader(w, r.Body, 1048576)
 
 	return DecodeJson(r.Body, dst)
+}
+
+func ReadConfig(path string) (types.LoggingConfig, error) {
+	var cfg types.LoggingConfig
+	cfMap, err := os.ReadFile(path)
+	if err != nil {
+		return cfg, err
+	}
+	if err := json.Unmarshal(cfMap, &cfg); err != nil {
+		return cfg, err
+	}
+
+	return cfg, nil
+}
+
+func DefaultLogger(logLevel string) *zap.Logger {
+	if logLevel == "" {
+		logLevel = "info"
+	}
+	rawJSON := []byte(`{
+		"level": "` + logLevel + `",
+		"encoding": "json",
+		"outputPaths": ["stdout"],
+		"errorOutputPaths": ["stderr"],
+		"initialFields": {"foo": "bar"},
+		"encoderConfig": {
+		  "messageKey": "message",
+		  "levelKey": "level",
+		  "levelEncoder": "lowercase"
+		}
+	  }`)
+
+	var cfg zap.Config
+	if err := json.Unmarshal(rawJSON, &cfg); err != nil {
+		panic(err)
+	}
+	logger, err := cfg.Build()
+	if err != nil {
+		panic(err)
+	}
+	defer logger.Sync()
+
+	return logger
+}
+
+func OverrideLogger(logLevel, userName string) *zap.Logger {
+	over := viper.GetStringMapString("overrides")
+	if over == nil {
+		return nil
+	}
+	if over["user"] != userName {
+		return nil
+	}
+	if over["loglevel"] == logLevel || over["loglevel"] == "" {
+		return nil
+	}
+	return DefaultLogger(over["loglevel"])
 }

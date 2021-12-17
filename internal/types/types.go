@@ -15,3 +15,12 @@ type IncomingMessage struct {
 type Encrypter interface {
 	EncryptResult([]byte) *Result
 }
+
+type LogRequest struct {
+	User string `json:"user"`
+}
+
+type LoggingConfig struct {
+	User     string `json:"user"`
+	LogLevel string `json:"logLevel"`
+}

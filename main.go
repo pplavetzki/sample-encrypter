@@ -7,6 +7,7 @@ import (
 	"errors"
 	_ "expvar"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	_ "net/http/pprof"
@@ -15,6 +16,8 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/spf13/viper"
+	"go.uber.org/zap"
 
 	helper "github.com/pplavetzki/sample-encrypter/internal"
 	types "github.com/pplavetzki/sample-encrypter/internal/types"
@@ -107,6 +110,32 @@ func EncryptIt(messages []types.IncomingMessage, encrypter types.Encrypter, limi
 	return results
 }
 
+func logHandlerFunc(logger *zap.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var il types.LogRequest
+		var currentLogger *zap.Logger
+
+		err := helper.DecodeJSONBody(w, r, &il)
+		if err != nil {
+			var mr *helper.MalformedRequest
+			if errors.As(err, &mr) {
+				http.Error(w, mr.Msg, mr.Status)
+			} else {
+				log.Println(err.Error())
+				http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			}
+			return
+		}
+
+		if currentLogger = helper.OverrideLogger(viper.GetString("logLevel"), il.User); currentLogger == nil {
+			currentLogger = logger
+		}
+
+		currentLogger.Sugar().Debugf("user id is %s\n", il.User)
+		currentLogger.Sugar().Info("user id is XXXXXXX redacted")
+	}
+}
+
 func encryptHandlerFunc(encrypter types.Encrypter) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var im []types.IncomingMessage
@@ -143,6 +172,29 @@ func init() {
 func main() {
 	var wait time.Duration
 	var mockit bool
+	var err error
+	var cfgPath string
+
+	cfgPath = os.Getenv("CONFIG_PATH")
+	if cfgPath == "" {
+		cfgPath = "./config"
+	}
+
+	viper.SetConfigName("config") // name of config file (without extension)
+	viper.SetConfigType("json")
+
+	viper.AddConfigPath(cfgPath)
+	err = viper.ReadInConfig() // Find and read the config file
+	if err != nil {            // Handle errors reading the config file
+		panic(fmt.Errorf("fatal error config file: %w", err))
+	}
+	viper.WatchConfig()
+
+	logger := helper.DefaultLogger(viper.GetString("logLevel"))
+
+	logger.Sugar().Debug("This is a debug message")
+
+	// go watchConfig(cfgPath)
 
 	flag.DurationVar(&wait, "graceful-timeout", time.Second*90, "the duration for which the server gracefully wait for existing connections to finish - e.g. 15s or 1m")
 	flag.BoolVar(&mockit, "mock", false, "whether or not to block transaction or not - default false")
@@ -173,6 +225,7 @@ func main() {
 	}
 
 	r.HandleFunc("/encrypt", encryptHandlerFunc(encrypter)).Methods("POST")
+	r.HandleFunc("/log", logHandlerFunc(logger)).Methods("POST")
 
 	// Run our server in a goroutine so that it doesn't block.
 	go func() {
